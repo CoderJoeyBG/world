@@ -12,13 +12,30 @@
   <style>
     :root { --bg:#0b1220; --card:#121a2b; --text:#dbe4ff; --muted:#8aa0c7; --accent:#4cc9f0; }
     html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font:16px/1.4 ui-sans-serif,system-ui,sans-serif}
-    #map{height:100vh;width:100vw}
+    #layout{display:grid;grid-template-columns:1fr 360px;height:100vh;}
+    #map{width:100%;height:100%;}
+    .panel{background:var(--card);border:1px solid rgba(255,255,255,.06);border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.35);padding:14px;display:flex;flex-direction:column;gap:10px;overflow:auto;}
+    .stat{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-radius:10px;background:#0e1628;border:1px solid rgba(255,255,255,.06)}
+    .muted{color:var(--muted);font-size:12px}
+    .list{overflow:auto;max-height:70vh;}
+    .log{font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;font-size:12px;background:#0a1323;border-radius:10px;padding:6px;border:1px solid rgba(255,255,255,.06);margin-bottom:4px}
     .pulse{width:16px;height:16px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 0 rgba(76,201,240,.7);animation:pulse 1.4s ease-out 1;border:2px solid white}
     @keyframes pulse{0%{transform:scale(.6);box-shadow:0 0 0 0 rgba(76,201,240,.7)}70%{transform:scale(1.7);box-shadow:0 0 0 14px rgba(76,201,240,0)}100%{transform:scale(1);box-shadow:0 0 0 0 rgba(76,201,240,0)}}
   </style>
 </head>
 <body>
-<div id="map"></div>
+<div id="layout">
+  <div id="map"></div>
+  <aside class="panel">
+    <div class="stat"><strong>Total Pings</strong><span id="totalPings">0</span></div>
+    <div class="stat"><strong>Unique Countries</strong><span id="uniqueCountries">0</span></div>
+    <div class="stat"><strong>Your Country</strong><span id="yourCountry" class="muted">—</span></div>
+    <div>
+      <div class="muted" style="margin:8px 2px 6px">Recent Pings</div>
+      <div id="log" class="list"></div>
+    </div>
+  </aside>
+</div>
 <script>
   const map = L.map('map').setView([20, 0], 2.2);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 6, minZoom: 2 }).addTo(map);
@@ -37,6 +54,18 @@
   firebase.initializeApp(firebaseConfig);
   const db = firebase.database();
 
+  const el = id => document.getElementById(id);
+  const totalPingsEl = el('totalPings');
+  const uniqueCountriesEl = el('uniqueCountries');
+  const yourCountryEl = el('yourCountry');
+  const logEl = el('log');
+
+  const state = { total:0, byCountry:new Map(), recent:[] };
+
+  function formatTime(ts){
+    return new Date(ts).toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  }
+
   function flagEmoji(countryCode){
     if(!countryCode) return '🏳️';
     const codePoints = countryCode.toUpperCase().split('').map(c => 127397 + c.charCodeAt());
@@ -44,28 +73,37 @@
   }
 
   function addPing({lat, lon, country, country_code, city, ip}){
-    const latLng = [lat, lon];
+    const latLng=[lat,lon];
     const div = L.divIcon({ className:'', html:'<div class="pulse" title="'+country+'"></div>', iconSize:[16,16], iconAnchor:[8,8] });
-    const marker = L.marker(latLng, { icon: div, zIndexOffset: 9999 }).addTo(pingLayer);
-    setTimeout(()=> pingLayer.removeLayer(marker), 1600);
+    const marker = L.marker(latLng,{icon:div,zIndexOffset:9999}).addTo(pingLayer);
+    setTimeout(()=> pingLayer.removeLayer(marker),1600);
+
+    state.total += 1;
+    const code = country_code || 'UN';
+    const entry = state.byCountry.get(code) || { name: country, flag: flagEmoji(code), count:0 };
+    entry.count += 1;
+    state.byCountry.set(code, entry);
+
+    state.recent.push({ country, flag: flagEmoji(code), city, ip, ts:Date.now() });
+    if(state.recent.length>50) state.recent.shift();
+
+    totalPingsEl.textContent = state.total;
+    uniqueCountriesEl.textContent = state.byCountry.size;
+    logEl.innerHTML = state.recent.slice().reverse().map(r=>`<div class="log">${r.flag} <strong>${r.country}</strong> · ${r.city||'—'} · ${r.ip} · ${formatTime(r.ts)}</div>`).join('');
+    if(country_code) yourCountryEl.textContent = `${flagEmoji(country_code)} ${country}`;
   }
 
   async function sendVisitorPing(){
-    try {
+    try{
       const res = await fetch('https://ipwho.is/');
       const j = await res.json();
       if(!j.success) throw new Error('Geo failed');
-      const data = { lat:j.latitude, lon:j.longitude, country:j.country, country_code:j.country_code, city:j.city, ip:j.ip, ts:Date.now() };
-      addPing(data);
+      const data={lat:j.latitude,lon:j.longitude,country:j.country,country_code:j.country_code,city:j.city,ip:j.ip,ts:Date.now()};
       db.ref('pings').push(data);
     } catch(e){ console.error(e); }
   }
 
-  db.ref('pings').on('child_added', snapshot => {
-    const ping = snapshot.val();
-    addPing(ping);
-  });
-
+  db.ref('pings').on('child_added', snapshot => addPing(snapshot.val()));
   sendVisitorPing();
 </script>
 </body>
